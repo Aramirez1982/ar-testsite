@@ -1,10 +1,8 @@
-Vagrant.configure("2") do |config|
-  # Every Vagrant virtual environment requires a box to build off of.
-  config.vm.box = "forumone/centos64-64"
+VAGRANTFILE_API_VERSION = "2"
 
-  # The url from where the 'config.vm.box' box will be fetched if it
-  # doesn't already exist on the user's system.
-  config.vm.box_url = "http://boxen.forumone.com/centos64-64.box"
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  # Every Vagrant virtual environment requires a box to build off of.
+  config.vm.box = "bento/centos-6.8"
 
   if Vagrant.has_plugin?("vagrant-cachier")
     # Configure cached packages to be shared between instances of the same base box.
@@ -27,12 +25,21 @@ Vagrant.configure("2") do |config|
   # Create a forwarded port mapping which allows access to a specific port
   # within the machine from a port on the host machine. In the example below,
   # accessing "localhost:8080" will access port 80 on the guest machine.
+  # Varnish
   config.vm.network :forwarded_port, guest: 80, host: 8080
-  config.vm.network :forwarded_port, guest: 443, host: 8443
+  # Nginx / Apache
   config.vm.network :forwarded_port, guest: 8080, host: 8081
+  config.vm.network :forwarded_port, guest: 443, host: 8443
+  # Solr
   config.vm.network :forwarded_port, guest: 8983, host: 18983
+  # MySQL
   config.vm.network :forwarded_port, guest: 3306, host: 13306
-  config.vm.network :forwarded_port, guest: 1080, host: 1080
+  # MailHog
+  config.vm.network :forwarded_port, guest: 8025, host: 8025
+  # Selenium
+  config.vm.network :forwarded_port, guest: 4444, host: 4444
+  # ElasticSearch
+  config.vm.network :forwarded_port, guest: 9200, host: 9200
   
   # Create a private network, which allows host-only access to the machine
   # using a specific IP.
@@ -40,62 +47,81 @@ Vagrant.configure("2") do |config|
 
   # Add NFS
   if (RUBY_PLATFORM =~ /linux/ or RUBY_PLATFORM =~ /darwin/)
-    config.vm.synced_folder ".", "/vagrant", :nfs => { :mount_options => ["dmode=777","fmode=666","no_root_squash"] }
+    synched_opts = { nfs: true, nfs_udp: false }
+    nfs_exports = ["rw", "async", "insecure", "no_subtree_check"]
+  
+    if (RUBY_PLATFORM =~ /darwin/)
+      nfs_exports += ["noac", "actimeo=0", "intr", "noacl", "lookupcache=none"]
+      synched_opts[:bsd__nfs_options] = nfs_exports
+    elsif (RUBY_PLATFORM =~ /linux/)
+      nfs_exports += ["all_squash"]
+      synched_opts[:linux__nfs_options] = nfs_exports
+    end
+  	
+    config.vm.synced_folder ".", "/vagrant", synched_opts
+    config.vm.synced_folder "./salt/roots/", "/srv/salt", :nfs => { }
+
     config.nfs.map_uid = Process.uid
     config.nfs.map_gid = Process.gid
   else
-    config.vm.synced_folder ".", "/vagrant", :mount_options => [ "dmode=777","fmode=666" ]
+    config.vm.synced_folder ".", "/vagrant", disabled: true
+  	
+    # Next, setup the shared Vagrant folder manually, bypassing Windows 260 character path limit
+    config.vm.provider "virtualbox" do |v|
+      v.customize ["sharedfolder", "add", :id, "--name", "vagrant", "--hostpath", (("//?/" + File.dirname(__FILE__)).gsub("/","\\"))]
+      v.customize ["setextradata", :id, "VBoxInternal2/SharedFoldersEnableSymlinksCreate/vagrant", "1"]
+    end
+    
+    # Finally, mount the shared folder on the guest system during provision
+    config.vm.provision :shell, inline: "mkdir -p /vagrant", run: "always"
+    config.vm.provision :shell, inline: "mount -t vboxsf -o uid=`id -u vagrant`,gid=`getent group vagrant | cut -d: -f3` vagrant /vagrant", run: "always"
+    
+    config.vm.synced_folder "./salt/roots/", "/srv/salt", :mount_options => [ "dmode=777","fmode=666" ]
     config.nfs.map_uid = 501
     config.nfs.map_gid = 20
   end
+
   
-  # Create a public network, which generally matched to bridged network.
-  # Bridged networks make the machine appear as another physical device on
-  # your network.
-  # config.vm.network :public_network
-
-  # Share an additional folder to the guest VM. The first argument is
-  # the path on the host to the actual folder. The second argument is
-  # the path on the guest to mount the folder. And the optional third
-  # argument is a set of non-required options.
-  # config.vm.synced_folder "../data", "/vagrant_data"
-
   # Provider-specific configuration so you can fine-tune various
   # backing providers for Vagrant. These expose provider-specific options.
   # Example for VirtualBox:
-  #
+  
   config.vm.provider :virtualbox do |vb|
     # Use VBoxManage to customize the VM. For example to change memory:
     vb.customize ["modifyvm", :id, "--memory", "1736"]
     vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
   end
 
+  config.vm.hostname = 'vagrant.byf1.io'
+
   config.ssh.forward_agent = true
+  # Workaround for authentication failure, retrying bug in vagrant 1.8.5
+  config.ssh.insert_key = false
 
+  # CentOS machines with Software Collections scripts (scl enable foo) have a misbehaving sudo that doesn't recognize flags.
+  # Override them to prevent cryptic errors about "line 8: -E: command not found"
+  config.ssh.sudo_command = "sudo %c"
+  
   # Run any custom scripts before provisioning
-  config.vm.provision :shell, :path => "puppet/shell/pre-provision.sh"
+  config.vm.provision :shell, :path => "config/shell/pre-provision.sh"
 
-  # Install git and librarian-puppet and get puppet modules
-  config.vm.provision :shell, :path => "puppet/shell/librarian-puppet-install.sh"
-
-  # Enable provisioning with Puppet stand alone.  Puppet manifests
-  # are contained in a directory path relative to this Vagrantfile.
-  # You will need to create the manifests directory and a manifest in
-  # the file centos64-64.pp in the manifests_path directory.
-  config.vm.provision :puppet do |puppet|
-    puppet.options = "--verbose"
-    puppet.facter = { 
-      "host_uid" => config.nfs.map_uid, 
-      "host_gid" => config.nfs.map_gid, 
-      "vagrant_user" => ENV['USER'] }
-    
-    puppet.manifests_path = "puppet/manifests"
-    puppet.manifest_file = "init.pp"
-    puppet.hiera_config_path = "puppet/manifests/hiera.yaml"
+  # Salt provisioning
+  config.vm.provision :salt do |salt|
+    salt.bootstrap_options = "-p python-pygit2 -p git"
+    salt.minion_config = "salt/minion"
+    salt.masterless = true
+    salt.verbose = true
+    salt.colorize = true
+    #salt.log_level = 'all'
+    salt.run_highstate = true
   end
 
   # Run any custom scripts after provisioning
-  config.vm.provision :shell, :path => "puppet/shell/post-provision.sh"
+  config.vm.provision :shell, :path => "config/shell/post-provision.sh"
+  config.vm.provision :shell, :path => "config/shell/post-provision.unprivileged.sh", privileged: false
+  
+  # https://github.com/mitchellh/vagrant/issues/5001
+  config.vm.box_download_insecure = true
 
 end
 

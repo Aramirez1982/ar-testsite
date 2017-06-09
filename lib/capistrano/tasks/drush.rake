@@ -58,7 +58,7 @@ namespace :drush do
 
   desc "Triggers drush site-install"
   task :siteinstall do
-    on roles(:app) do
+    on roles(:db) do
       command = "-y -r #{current_path}/#{fetch(:webroot, 'public')} site-install "
     
       if ENV['profile']
@@ -71,7 +71,7 @@ namespace :drush do
   
   desc "Triggers drush sql-sync to copy databases between environments"
   task :sqlsync do 
-    on roles(:app) do
+    on roles(:db) do
       if ENV['source']
         within "#{release_path}/#{fetch(:app_webroot, 'public')}" do
           execute :drush, "-p -r #{current_path}/#{fetch(:webroot, 'public')} -l #{fetch(:site_url)[0]} sql-sync #{ENV['source']} @self -y"
@@ -101,10 +101,16 @@ namespace :drush do
 
   desc "Creates database backup"
   task :sqldump do 
-    on roles(:app) do
+    on roles(:db) do
       unless test " [ -f #{release_path}/db.sql.gz ]"
         within "#{release_path}/#{fetch(:app_webroot, 'public')}" do
-          execute :drush, "-r #{current_path}/#{fetch(:webroot, 'public')} -l #{fetch(:site_url)[0]} sql-dump -y --gzip --result-file=#{release_path}/db.sql"
+          # Capture the output from drush status
+          status = JSON.parse(capture(:drush, '-p', 'status'))
+          
+          # Ensure that we are connected to the database and were able to bootstrap Drupal
+          if ('Connected' == status['db-status'] && 'Successful' == status['bootstrap'])
+            execute :drush, "-r #{current_path}/#{fetch(:webroot, 'public')} -l #{fetch(:site_url)[0]} sql-dump -y --gzip --result-file=#{release_path}/db.sql"
+          end
         end
       end
     end
@@ -112,7 +118,7 @@ namespace :drush do
   
   desc "Runs all pending update hooks"
   task :updatedb do
-    on roles(:app) do
+    on roles(:db) do
       within "#{release_path}/#{fetch(:app_webroot, 'public')}" do
         fetch(:site_url).each do |site|
           execute :drush, "-y -p -r #{current_path}/#{fetch(:webroot, 'public')} -l #{site}", 'updatedb'
@@ -123,7 +129,7 @@ namespace :drush do
 
   desc "Clears the Drupal cache"
   task :cc do
-    on roles(:app) do
+    on roles(:db) do
       within "#{release_path}/#{fetch(:app_webroot, 'public')}" do
         fetch(:site_url).each do |site|
           execute :drush, "-y -p -r #{current_path}/#{fetch(:webroot, 'public')} -l #{site}", 'cc all'
@@ -155,7 +161,7 @@ namespace :drush do
   namespace :configuration do
     desc "Load Configuration from the Data Store and apply it to the Active Store"
     task :sync do
-      on roles(:app) do
+      on roles(:db) do
         within "#{release_path}/#{fetch(:app_webroot, 'public')}" do
           execute :drush, "-y -p -r #{current_path}/#{fetch(:webroot, 'public')} -l #{fetch(:site_url)}", 'config-sync'
         end
@@ -168,7 +174,7 @@ namespace :drush do
   namespace :features do
     desc "Revert Features"
     task :revert do
-      on roles(:app) do
+      on roles(:db) do
         within "#{release_path}/#{fetch(:app_webroot, 'public')}" do
           # For each site
           fetch(:site_url).each do |site|
@@ -199,7 +205,7 @@ namespace :drush do
   namespace :sapi do
     desc "Reindex Search API Indexes"
     task :reindex do
-      on roles(:app) do
+      on roles(:db) do
         within "#{release_path}/#{fetch(:app_webroot, 'public')}" do
           # For each site
           fetch(:site_url).each do |site|
